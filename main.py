@@ -1,5 +1,8 @@
 from svgpathtools import svg2paths
 import pyembroidery
+from shapely.geometry import Polygon, Point
+from shapely.ops import unary_union
+import numpy as np
 
 def convert_svg_to_dst(svg_file="complex.svg", output_file="output.dst", step_size=3.0, scale=1.0):
     """
@@ -133,61 +136,94 @@ def convert_svg_to_dst(svg_file="complex.svg", output_file="output.dst", step_si
                     y = (point.imag - center_y) * scale
                     fill_points.append((x, y))
 
-                # Create proper horizontal line fill
+                # Create even-odd fill using winding number algorithm
                 if fill_points:
+                    def winding_number(point_x, point_y, polygon_points):
+                        """Calculate winding number for even-odd fill rule"""
+                        wn = 0
+                        n = len(polygon_points)
+
+                        for i in range(n):
+                            x1, y1 = polygon_points[i]
+                            x2, y2 = polygon_points[(i + 1) % n]
+
+                            if y1 <= point_y:
+                                if y2 > point_y:  # upward crossing
+                                    if is_left(x1, y1, x2, y2, point_x, point_y) > 0:
+                                        wn += 1
+                            else:
+                                if y2 <= point_y:  # downward crossing
+                                    if is_left(x1, y1, x2, y2, point_x, point_y) < 0:
+                                        wn -= 1
+                        return wn
+
+                    def is_left(x1, y1, x2, y2, px, py):
+                        """Test if point is left|on|right of line"""
+                        return ((x2 - x1) * (py - y1) - (px - x1) * (y2 - y1))
+
+                    def point_in_polygon_evenodd(x, y, polygon_points):
+                        """Even-odd fill rule: odd winding number = inside"""
+                        wn = winding_number(x, y, polygon_points)
+                        return (wn % 2) == 1
+
                     # Get bounding box
                     min_x = min(p[0] for p in fill_points)
                     max_x = max(p[0] for p in fill_points)
                     min_y = min(p[1] for p in fill_points)
                     max_y = max(p[1] for p in fill_points)
 
-                    # Create horizontal fill lines (denser)
-                    fill_spacing = 1.5  # Smaller spacing for denser fill
+                    # Create horizontal fill lines with even-odd rule
+                    fill_spacing = 1.0  # Dense spacing for quality fill
+                    stitch_spacing = 1.5  # Spacing between stitches on each line
                     fill_lines = 0
 
                     y = min_y + fill_spacing
                     while y < max_y:
-                        # Find intersection points with shape at this Y level
-                        intersections = []
+                        # Find all points on this horizontal line that are inside using even-odd rule
+                        line_points = []
 
-                        # Check intersections with each segment of the path
-                        for i in range(len(fill_points) - 1):
-                            x1, y1 = fill_points[i]
-                            x2, y2 = fill_points[i + 1]
+                        x = min_x
+                        while x <= max_x:
+                            if point_in_polygon_evenodd(x, y, fill_points):
+                                line_points.append(x)
+                            x += stitch_spacing
 
-                            # Check if horizontal line at y intersects this segment
-                            if (y1 <= y <= y2) or (y2 <= y <= y1):
-                                if y1 != y2:  # Avoid division by zero
-                                    # Calculate intersection x coordinate
-                                    t = (y - y1) / (y2 - y1)
-                                    x_intersect = x1 + t * (x2 - x1)
-                                    intersections.append(x_intersect)
+                        # Group consecutive points into line segments
+                        if line_points:
+                            segments = []
+                            start = line_points[0]
+                            end = line_points[0]
 
-                        # Sort intersections and create fill lines
-                        intersections.sort()
+                            for i in range(1, len(line_points)):
+                                if line_points[i] - line_points[i-1] <= stitch_spacing * 1.5:
+                                    end = line_points[i]
+                                else:
+                                    if end - start > 2.0:  # Only create segments that are wide enough
+                                        segments.append((start, end))
+                                    start = line_points[i]
+                                    end = line_points[i]
 
-                        # Create fill lines between pairs of intersections
-                        for i in range(0, len(intersections) - 1, 2):
-                            if i + 1 < len(intersections):
-                                x_start = intersections[i]
-                                x_end = intersections[i + 1]
+                            # Add the last segment
+                            if end - start > 2.0:
+                                segments.append((start, end))
 
-                                # Only create line if it's wide enough
-                                if abs(x_end - x_start) > 1.0:
-                                    pattern.move_abs(x_start, y)
-                                    pattern.stitch_abs(x_end, y)
-                                    fill_lines += 1
-                                    total_stitches += 1
+                            # Stitch each segment
+                            for start_x, end_x in segments:
+                                pattern.move_abs(start_x, y)
+                                pattern.stitch_abs(end_x, y)
+                                fill_lines += 1
+                                total_stitches += 1
 
                         y += fill_spacing
 
-                    # Add outline on top of fill for clean edges
-                    pattern.move_abs(fill_points[0][0], fill_points[0][1])
-                    for x, y in fill_points[1:]:
-                        pattern.stitch_abs(x, y)
-                        total_stitches += 1
+                    # Add clean outline on top
+                    if fill_points:
+                        pattern.move_abs(fill_points[0][0], fill_points[0][1])
+                        for x, y in fill_points[1:]:
+                            pattern.stitch_abs(x, y)
+                            total_stitches += 1
 
-                    print(f"    Fill: {fill_lines} horizontal lines + outline")
+                    print(f"    Fill: {fill_lines} even-odd fill lines + outline")
 
             # Process stroke (outline)
             if stroke_color and stroke_color != 'none':
