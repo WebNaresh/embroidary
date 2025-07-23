@@ -102,8 +102,92 @@ def convert_svg_to_dst(svg_file="complex.svg", output_file="output.dst", step_si
             stroke_color = attr.get('stroke', 'none')
             fill_color = attr.get('fill', 'none')
 
-            # Skip fill processing - focus on stroke only for now
-            # (Fill in embroidery requires specialized algorithms)
+            # Process fill using concentric layers approach
+            if fill_color and fill_color != 'none':
+                print(f"  Path {i+1} FILL: {fill_color}")
+
+                if fill_color.startswith('#'):
+                    fill_embroidery_color = parse_hex_color(fill_color)
+                else:
+                    fill_embroidery_color = color_map.get(fill_color, 0x000000)
+
+                # Add fill color
+                pattern.color_change()
+                fill_thread_info = {
+                    "hex": f"#{fill_embroidery_color:06X}",
+                    "description": f"Fill {fill_color}",
+                    "brand": "SVG",
+                    "catalog_number": f"{i+1:03d}F",
+                    "weight": "40",
+                    "color": fill_embroidery_color
+                }
+                pattern.add_thread(fill_thread_info)
+
+                # Create path points for fill
+                fill_samples = max(int(path_length / step_size), 20)
+                fill_points = []
+                for j in range(fill_samples + 1):
+                    t = j / fill_samples
+                    point = path.point(t)
+                    x = (point.real - center_x) * scale
+                    y = (point.imag - center_y) * scale
+                    fill_points.append((x, y))
+
+                # Create proper horizontal line fill
+                if fill_points:
+                    # Get bounding box
+                    min_x = min(p[0] for p in fill_points)
+                    max_x = max(p[0] for p in fill_points)
+                    min_y = min(p[1] for p in fill_points)
+                    max_y = max(p[1] for p in fill_points)
+
+                    # Create horizontal fill lines (denser)
+                    fill_spacing = 1.5  # Smaller spacing for denser fill
+                    fill_lines = 0
+
+                    y = min_y + fill_spacing
+                    while y < max_y:
+                        # Find intersection points with shape at this Y level
+                        intersections = []
+
+                        # Check intersections with each segment of the path
+                        for i in range(len(fill_points) - 1):
+                            x1, y1 = fill_points[i]
+                            x2, y2 = fill_points[i + 1]
+
+                            # Check if horizontal line at y intersects this segment
+                            if (y1 <= y <= y2) or (y2 <= y <= y1):
+                                if y1 != y2:  # Avoid division by zero
+                                    # Calculate intersection x coordinate
+                                    t = (y - y1) / (y2 - y1)
+                                    x_intersect = x1 + t * (x2 - x1)
+                                    intersections.append(x_intersect)
+
+                        # Sort intersections and create fill lines
+                        intersections.sort()
+
+                        # Create fill lines between pairs of intersections
+                        for i in range(0, len(intersections) - 1, 2):
+                            if i + 1 < len(intersections):
+                                x_start = intersections[i]
+                                x_end = intersections[i + 1]
+
+                                # Only create line if it's wide enough
+                                if abs(x_end - x_start) > 1.0:
+                                    pattern.move_abs(x_start, y)
+                                    pattern.stitch_abs(x_end, y)
+                                    fill_lines += 1
+                                    total_stitches += 1
+
+                        y += fill_spacing
+
+                    # Add outline on top of fill for clean edges
+                    pattern.move_abs(fill_points[0][0], fill_points[0][1])
+                    for x, y in fill_points[1:]:
+                        pattern.stitch_abs(x, y)
+                        total_stitches += 1
+
+                    print(f"    Fill: {fill_lines} horizontal lines + outline")
 
             # Process stroke (outline)
             if stroke_color and stroke_color != 'none':
@@ -184,10 +268,10 @@ def convert_svg_to_dst(svg_file="complex.svg", output_file="output.dst", step_si
 
 # Main execution
 if __name__ == "__main__":
-    print("=== SVG to DST Embroidery Converter ===\n")
+    print("=== SVG to DST Converter - With Fill Support ===\n")
 
-    # Create DST file only
-    print("Converting SVG to DST...")
-    convert_svg_to_dst("complex_design.svg", "output.dst", step_size=3.0, scale=0.6)
+    # Create filled DST file
+    print("Converting SVG to DST with fill...")
+    convert_svg_to_dst("complex_design.svg", "logo_filled.dst", step_size=3.0, scale=0.6)
 
-    print("\n✓ DST file created!")
+    print("\n✓ Filled DST file created!")
